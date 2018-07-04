@@ -26,32 +26,19 @@
 #-------------------------------------------------------------------------------
 #!/usr/bin/env python
 
-"""Encrypted field for Peewee.
-Saves data to the DB as Fernet tokens.
-For details about fernet see https://github.com/fernet/spec
-Uses simple fernet implementation https://github.com/heroku/fernet-py
-Idea caught from SQLAlchemy.
+"""
+Encrypted field for Peewee.
+Saves data to the DB as as AES128 bytestream
+Re-implemented with cryptography fernet module albeit with a cutdown in fuctionality.
+Idea taken from brake/peewee_encrypted_field which was at the time having issues with setup drawing down 
+https://pypi.org/project/fernet/
+rather than
+https://github.com/heroku/fernet-py
 """
 
-from __future__ import unicode_literals
-import fernet
-import fernet.secret as secret
+from cryptography.fernet import MultiFernet
+from cryptography.fernet import Fernet
 from peewee import *
-
-__author__ = 'Constantin Roganov'
-
-
-class KeyIsInvalid(Exception): pass
-
-
-def validate_key(key):
-    """Perform a simple key validation.
-    In case key is invalid raises exception.
-    """
-    try:
-        secret.Secret(key)
-    except secret.Secret.InvalidSecret as e:
-        raise KeyIsInvalid(e.message)
 
 
 class EncryptedField(Field):
@@ -62,55 +49,35 @@ class EncryptedField(Field):
     model_class and second key is id(self_field).
     """
 
-    class KeyIsUndefined(RuntimeError): pass
+    class KeyIsUndefined(RuntimeError):
+        pass
 
-    class KeyAlreadyExists(RuntimeError): pass
+    class KeyAlreadyExists(RuntimeError):
+        pass
 
-    _keys = {}
+    _Tokens = []
     db_field = 'text'
 
-    def db_value(self, value):
-        if not self.key:
-            raise EncryptedField.KeyIsUndefined()
+    def __init__(self, Key=None, **kwargs):
+        if Key is None:
+            Key = MultiFernet.generate_key()
+            print('No key supplied pesudo-random key generated : {}\nPlease update field with this key value before next run'.format(Key))
 
-        return fernet.generate(self.key, value)
-
-    def python_value(self, value):
-        if not self.key:
-            raise EncryptedField.KeyIsUndefined()
-
-        return super(EncryptedField, self).python_value(
-            fernet.Token(value, self.key, enforce_ttl=False).message()
-        )
-
-    def key_exists(self):
-        return (self.model_class in EncryptedField._keys
-                and id(self) in EncryptedField._keys[self.model_class])
+        EncryptedField._Tokens.append(Fernet(Key))
+        Field.__init__(self, **kwargs)
 
     @property
-    def key(self):
-        return (
-            EncryptedField._keys[self.model_class][id(self)] if self.key_exists() else None
-        )
+    def Fernet(self):
+        try:
+            return MultiFernet(EncryptedField._Tokens)
+        except:
+            raise EncryptedField.KeyIsUndefined
 
-    @key.setter
-    def key(self, key_val):
-        """Allows to set key only once"""
+    def db_value(self, value):
+        return self.Fernet.encrypt(bytes(value,  'utf-8'))
 
-        if self.key_exists():
-            raise EncryptedField.KeyAlreadyExists()
-
-        validate_key(key_val)
-
-        if self.model_class not in self._keys:
-            EncryptedField._keys[self.model_class] = {}
-
-        EncryptedField._keys[self.model_class][id(self)] = key_val
-
-    @key.deleter
-    def key(self):
-        if self.key_exists():
-            del EncryptedField._keys[self.model_class][id(self)]
+    def python_value(self, value):
+        return self.Fernet.decrypt(value).decode('utf8')
 
 
 
